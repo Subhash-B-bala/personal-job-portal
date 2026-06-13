@@ -1,8 +1,16 @@
 import { useState } from 'react';
 import { useSettings } from '../../hooks/useSettings';
+import { DEFAULT_ACTOR_ID } from '../../hooks/useApify';
 
 // Curated list of Apify actors that scrape jobs in India
 const KNOWN_ACTORS = [
+  {
+    id: 'bovi/naukri-jobs-scraper',
+    name: 'Naukri Jobs Scraper',
+    description: 'Best actor for Data Analyst jobs in India. Scrapes Naukri.com with keyword + location filters. Returns title, company, skills, salary, experience, and direct job URL.',
+    sites: ['Naukri'],
+    recommended: true,
+  },
   {
     id: 'bebity/linkedin-jobs-scraper',
     name: 'LinkedIn Jobs Scraper',
@@ -14,12 +22,6 @@ const KNOWN_ACTORS = [
     name: 'Indeed Scraper',
     description: 'Scrapes Indeed job posts. Good coverage for fresher and entry-level roles.',
     sites: ['Indeed'],
-  },
-  {
-    id: 'vaclavrut/naukri-jobs-scraper',
-    name: 'Naukri Jobs Scraper',
-    description: 'Scrapes Naukri.com — top platform for Data Analyst jobs in Chennai.',
-    sites: ['Naukri'],
   },
   {
     id: 'curious_coder/job-scraper',
@@ -78,7 +80,7 @@ export default function Settings() {
   const { settings, saveSettings } = useSettings();
 
   const [apifyKey, setApifyKey]   = useState(settings.apifyApiKey);
-  const [actorId, setActorId]     = useState(settings.apifyActorId);
+  const [actorId, setActorId]     = useState(settings.apifyActorId || DEFAULT_ACTOR_ID);
   const [groqKey, setGroqKey]     = useState(settings.groqApiKey);
 
   const [suggesting, setSuggesting] = useState(false);
@@ -156,7 +158,7 @@ export default function Settings() {
           <div className="flex gap-2">
             <input
               className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 font-mono"
-              placeholder="e.g. bebity/linkedin-jobs-scraper"
+              placeholder="e.g. bovi/naukri-jobs-scraper"
               value={actorId}
               onChange={(e) => setActorId(e.target.value)}
             />
@@ -175,7 +177,7 @@ export default function Settings() {
 
         {/* Actor picker */}
         <div className="flex flex-col gap-2">
-          <p className="text-xs font-medium text-gray-600">Or pick from known job scrapers:</p>
+          <p className="text-xs font-medium text-gray-600">Pick a job scraper:</p>
           {KNOWN_ACTORS.map((actor) => (
             <button
               key={actor.id}
@@ -183,12 +185,19 @@ export default function Settings() {
               className={`text-left px-3 py-2.5 rounded-lg border text-sm transition-colors
                 ${actorId === actor.id
                   ? 'border-indigo-400 bg-indigo-50'
-                  : 'border-gray-200 hover:border-gray-300 bg-white'
+                  : actor.recommended
+                    ? 'border-green-300 bg-green-50 hover:border-green-400'
+                    : 'border-gray-200 hover:border-gray-300 bg-white'
                 }`}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-gray-800">{actor.name}</span>
-                <span className="text-xs text-gray-400">{actor.sites.join(', ')}</span>
+                {actor.recommended && (
+                  <span className="text-xs bg-green-600 text-white px-1.5 py-0.5 rounded-full">
+                    Default
+                  </span>
+                )}
+                <span className="text-xs text-gray-400 ml-auto">{actor.sites.join(', ')}</span>
               </div>
               <p className="text-xs text-gray-500 mt-0.5">{actor.description}</p>
               <p className="text-xs font-mono text-gray-400 mt-1">{actor.id}</p>
