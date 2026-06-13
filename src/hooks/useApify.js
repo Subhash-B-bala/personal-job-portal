@@ -10,14 +10,14 @@ const SETTINGS_KEY   = 'nandhini_settings';
 // Best verified Naukri scraper on Apify (1,850 users, 6,784 runs)
 export const DEFAULT_ACTOR_ID = 'automation-lab/naukri-scraper';
 
-// Run 2 searches and merge — keeps results targeted for Nandhini's profile
+// 2 parallel searches — merged and deduped
 const SEARCH_RUNS = [
   {
     keyword: 'data analyst',
     location: 'chennai',
-    maxJobs: 30,
+    maxJobs: 20,
     experienceMin: 0,
-    experienceMax: 2,
+    experienceMax: 1,
     sortBy: 'date',
     proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
   },
@@ -26,7 +26,7 @@ const SEARCH_RUNS = [
     location: 'chennai',
     maxJobs: 20,
     experienceMin: 0,
-    experienceMax: 2,
+    experienceMax: 1,
     sortBy: 'date',
     proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
   },
@@ -102,6 +102,23 @@ function dedupeById(items) {
   });
 }
 
+/**
+ * Return true if the experience field looks like it requires > 1 year.
+ * Handles formats like "10 - 15 Yrs", "5+ years", "3-5 yrs", "2 Years".
+ */
+function tooMuchExperience(expStr) {
+  if (!expStr) return false;
+  const str = String(expStr).toLowerCase();
+
+  // Extract all numbers from the string
+  const nums = [...str.matchAll(/\d+/g)].map((m) => parseInt(m[0], 10));
+  if (nums.length === 0) return false;
+
+  // The minimum required experience is the first (smallest) number
+  const minRequired = Math.min(...nums);
+  return minRequired > 1;
+}
+
 function processItems(items) {
   return dedupeById(
     items
@@ -109,6 +126,7 @@ function processItems(items) {
         const item  = normaliseItem(raw);
         return { ...item, score: scoreJob(item), scam: detectScam(item) };
       })
+      .filter((item) => !tooMuchExperience(item.experience))
   )
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
@@ -116,50 +134,26 @@ function processItems(items) {
 
 // ── Apify REST helpers ────────────────────────────────────────────────────
 
-async function startRun(actorId, apiKey, input) {
-  const res = await fetch(
-    `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/runs?token=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    }
-  );
+/**
+ * Uses Apify's sync endpoint — starts run, waits, returns items in ONE request.
+ * No polling needed. Timeout 60s per search.
+ */
+async function runSync(actorId, apiKey, input) {
+  const url = `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items`
+    + `?token=${apiKey}&timeout=60&memory=256`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Apify start error (${res.status})`);
+    throw new Error(err?.error?.message || `Apify error (${res.status})`);
   }
-  return (await res.json()).data;
-}
 
-async function waitForRun(runId, apiKey, maxWaitMs = 120_000) {
-  const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
-    await new Promise((r) => setTimeout(r, 4000));
-    const res    = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${apiKey}`);
-    const data   = await res.json();
-    const status = data?.data?.status;
-    if (status === 'SUCCEEDED') return data.data;
-    if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
-      throw new Error(`Actor run ${status.toLowerCase()}`);
-    }
-  }
-  throw new Error('Timed out waiting for results (>2 min). Try again later.');
-}
-
-async function fetchItems(datasetId, apiKey) {
-  const res = await fetch(
-    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${apiKey}&limit=60`
-  );
-  if (!res.ok) throw new Error(`Failed to fetch dataset (${res.status})`);
-  return res.json();
-}
-
-// Run a single actor call and return its items
-async function runOnce(actorId, apiKey, input) {
-  const run      = await startRun(actorId, apiKey, input);
-  const finished = await waitForRun(run.id, apiKey);
-  return fetchItems(finished.defaultDatasetId, apiKey);
+  return res.json(); // returns array of items directly
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -190,22 +184,21 @@ export function useApify() {
       let allItems = [];
 
       if (apifyActorId === DEFAULT_ACTOR_ID) {
-        // Run 2 targeted searches in sequence and merge
-        for (const input of SEARCH_RUNS) {
-          try {
-            const items = await runOnce(apifyActorId, apifyApiKey, input);
-            if (Array.isArray(items)) allItems = allItems.concat(items);
-          } catch {
-            // If one search fails, continue with others
+        // Run 2 searches IN PARALLEL — cuts wait time in half
+        const results = await Promise.allSettled(
+          SEARCH_RUNS.map((input) => runSync(apifyActorId, apifyApiKey, input))
+        );
+        for (const r of results) {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+            allItems = allItems.concat(r.value);
           }
         }
       } else {
-        // Generic single run for other actors
-        allItems = await runOnce(apifyActorId, apifyApiKey, genericInput());
+        allItems = await runSync(apifyActorId, apifyApiKey, genericInput());
       }
 
       if (allItems.length === 0) {
-        throw new Error('No jobs returned from Naukri. Your Apify free credits may have run out, or try refreshing.');
+        throw new Error('No jobs returned. Check your Apify credits or try a different actor.');
       }
 
       const processed = processItems(allItems);
