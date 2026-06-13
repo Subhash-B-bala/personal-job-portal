@@ -10,25 +10,21 @@ const SETTINGS_KEY   = 'nandhini_settings';
 // Best verified Naukri scraper on Apify (1,850 users, 6,784 runs)
 export const DEFAULT_ACTOR_ID = 'automation-lab/naukri-scraper';
 
-// 2 parallel searches — merged and deduped
+// 2 parallel searches — experience filtering done client-side after fetch
 const SEARCH_RUNS = [
   {
     keyword: 'data analyst',
     location: 'chennai',
-    maxJobs: 20,
-    experienceMin: 0,
-    experienceMax: 1,
+    maxJobs: 30,
     sortBy: 'date',
-    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+    proxyConfiguration: { useApifyProxy: true },
   },
   {
-    keyword: 'power bi analyst',
+    keyword: 'power bi sql analyst',
     location: 'chennai',
-    maxJobs: 20,
-    experienceMin: 0,
-    experienceMax: 1,
+    maxJobs: 30,
     sortBy: 'date',
-    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+    proxyConfiguration: { useApifyProxy: true },
   },
 ];
 
@@ -37,9 +33,9 @@ function genericInput() {
   return {
     keyword: 'data analyst',
     location: 'chennai',
-    maxJobs: 50,
-    queries: ['Data Analyst Chennai', 'Power BI Analyst fresher India'],
-    maxResults: 50,
+    maxJobs: 30,
+    sortBy: 'date',
+    proxyConfiguration: { useApifyProxy: true },
   };
 }
 
@@ -140,7 +136,7 @@ function processItems(items) {
  */
 async function runSync(actorId, apiKey, input) {
   const url = `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items`
-    + `?token=${apiKey}&timeout=60&memory=256`;
+    + `?token=${apiKey}&timeout=90&memory=256`;
 
   const res = await fetch(url, {
     method: 'POST',
