@@ -7,25 +7,45 @@ const CACHE_KEY      = 'nandhini_jobs_cache';
 const CACHE_DATE_KEY = 'nandhini_jobs_date';
 const SETTINGS_KEY   = 'nandhini_settings';
 
-// Default actor — bovi/naukri-jobs-scraper (best for Naukri India jobs)
-export const DEFAULT_ACTOR_ID = 'bovi/naukri-jobs-scraper';
+// Best verified Naukri scraper on Apify (1,850 users, 6,784 runs)
+export const DEFAULT_ACTOR_ID = 'automation-lab/naukri-scraper';
 
-// Input payload for bovi/naukri-jobs-scraper
-const NAUKRI_INPUT = {
-  searchKeywords: ['Data Analyst', 'Power BI Analyst', 'SQL Analyst'],
-  location: 'Chennai',
-  maxItems: 50,
-  maxPages: 3,
-  proxyConfiguration: {
-    useApifyProxy: true,
-    apifyProxyCountry: 'IN',
+// Run 2 searches and merge — keeps results targeted for Nandhini's profile
+const SEARCH_RUNS = [
+  {
+    keyword: 'data analyst',
+    location: 'chennai',
+    maxJobs: 30,
+    experienceMin: 0,
+    experienceMax: 2,
+    sortBy: 'date',
+    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
   },
-};
+  {
+    keyword: 'power bi analyst',
+    location: 'chennai',
+    maxJobs: 20,
+    experienceMin: 0,
+    experienceMax: 2,
+    sortBy: 'date',
+    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+  },
+];
+
+// Generic fallback input for other actors
+function genericInput() {
+  return {
+    keyword: 'data analyst',
+    location: 'chennai',
+    maxJobs: 50,
+    queries: ['Data Analyst Chennai', 'Power BI Analyst fresher India'],
+    maxResults: 50,
+  };
+}
 
 function todayString() {
   return new Date().toISOString().slice(0, 10);
 }
-
 function loadCache() {
   if (localStorage.getItem(CACHE_DATE_KEY) === todayString()) {
     const raw = localStorage.getItem(CACHE_KEY);
@@ -33,12 +53,10 @@ function loadCache() {
   }
   return null;
 }
-
 function saveCache(jobs) {
   localStorage.setItem(CACHE_KEY, JSON.stringify(jobs));
   localStorage.setItem(CACHE_DATE_KEY, todayString());
 }
-
 function getApiSettings() {
   const saved = loadStorage(SETTINGS_KEY, {});
   return {
@@ -48,65 +66,68 @@ function getApiSettings() {
 }
 
 /**
- * Normalise a raw item from bovi/naukri-jobs-scraper to the shape
- * the rest of the app expects: { id, title, company, location,
- * description, postedAt, source, applyUrl }
+ * Normalise raw item → app schema.
+ * Handles field name variations across different Naukri actors.
  */
 function normaliseItem(item) {
+  const title   = item.title       ?? item.jobTitle   ?? item.role        ?? item.position      ?? '';
+  const company = item.company     ?? item.companyName ?? item.employer    ?? item.organisation  ?? '';
+  const loc     = item.location    ?? item.city        ?? item.jobLocation ?? '';
+  const desc    = item.description ?? item.jobDescription ?? item.about   ?? item.snippet       ?? '';
+  const url     = item.applyLink   ?? item.jobUrl      ?? item.url        ?? item.link          ?? item.job_url ?? '#';
+  const posted  = item.postedAt    ?? item.date        ?? item.postedDate ?? item.scraped_at    ?? new Date().toISOString();
+  const id      = item.jobId       ?? item.job_id      ?? item.id         ?? crypto.randomUUID();
+
   return {
-    id:          item.job_id    ?? item.id    ?? crypto.randomUUID(),
-    title:       item.title     ?? item.role  ?? '',
-    company:     item.company   ?? '',
-    location:    item.location  ?? '',
-    description: item.description_snippet ?? item.description ?? '',
-    postedAt:    item.posted_date ?? item.scraped_at ?? new Date().toISOString(),
-    source:      'Naukri',
-    applyUrl:    item.job_url   ?? item.applyUrl ?? '#',
-    // keep originals too (useful for scoring extra fields)
-    skills:      item.skills    ?? '',
-    experience:  item.experience ?? '',
-    salary:      item.salary    ?? '',
+    id,
+    title,
+    company,
+    location: loc,
+    description: desc,
+    postedAt: posted,
+    source: 'Naukri',
+    applyUrl: url,
+    salary:     item.salary     ?? item.salaryRange ?? '',
+    experience: item.experience ?? item.exp         ?? '',
+    skills:     Array.isArray(item.skills) ? item.skills.join(', ') : (item.skills ?? ''),
   };
 }
 
+function dedupeById(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
 function processItems(items) {
-  return items
-    .map((raw) => {
-      const item  = normaliseItem(raw);
-      const score = scoreJob(item);
-      const scam  = detectScam(item);
-      return { ...item, score, scam };
-    })
+  return dedupeById(
+    items
+      .map((raw) => {
+        const item  = normaliseItem(raw);
+        return { ...item, score: scoreJob(item), scam: detectScam(item) };
+      })
+  )
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
 }
 
-// ── Apify REST API helpers ────────────────────────────────────────────────
+// ── Apify REST helpers ────────────────────────────────────────────────────
 
-function buildActorInput(actorId) {
-  // Use Naukri-specific input for the default actor; generic fallback for others
-  if (actorId === DEFAULT_ACTOR_ID) return NAUKRI_INPUT;
-  return {
-    queries:    ['Data Analyst Chennai', 'Power BI Analyst fresher India'],
-    maxResults: 50,
-    keyword:    'Data Analyst',
-    location:   'Chennai',
-    country:    'IN',
-  };
-}
-
-async function startActorRun(actorId, apiKey) {
+async function startRun(actorId, apiKey, input) {
   const res = await fetch(
     `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/runs?token=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildActorInput(actorId)),
+      body: JSON.stringify(input),
     }
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Apify error (${res.status})`);
+    throw new Error(err?.error?.message || `Apify start error (${res.status})`);
   }
   return (await res.json()).data;
 }
@@ -120,18 +141,25 @@ async function waitForRun(runId, apiKey, maxWaitMs = 120_000) {
     const status = data?.data?.status;
     if (status === 'SUCCEEDED') return data.data;
     if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
-      throw new Error(`Apify run ${status.toLowerCase()}`);
+      throw new Error(`Actor run ${status.toLowerCase()}`);
     }
   }
-  throw new Error('Apify run timed out — try again later.');
+  throw new Error('Timed out waiting for results (>2 min). Try again later.');
 }
 
-async function fetchDatasetItems(datasetId, apiKey) {
+async function fetchItems(datasetId, apiKey) {
   const res = await fetch(
-    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${apiKey}&limit=50`
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${apiKey}&limit=60`
   );
-  if (!res.ok) throw new Error(`Failed to fetch results (${res.status})`);
+  if (!res.ok) throw new Error(`Failed to fetch dataset (${res.status})`);
   return res.json();
+}
+
+// Run a single actor call and return its items
+async function runOnce(actorId, apiKey, input) {
+  const run      = await startRun(actorId, apiKey, input);
+  const finished = await waitForRun(run.id, apiKey);
+  return fetchItems(finished.defaultDatasetId, apiKey);
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -159,20 +187,33 @@ export function useApify() {
     setError(null);
 
     try {
-      const run      = await startActorRun(apifyActorId, apifyApiKey);
-      const finished = await waitForRun(run.id, apifyApiKey);
-      const items    = await fetchDatasetItems(finished.defaultDatasetId, apifyApiKey);
+      let allItems = [];
 
-      if (!Array.isArray(items) || items.length === 0) {
-        throw new Error('No jobs returned — actor may need different search keywords.');
+      if (apifyActorId === DEFAULT_ACTOR_ID) {
+        // Run 2 targeted searches in sequence and merge
+        for (const input of SEARCH_RUNS) {
+          try {
+            const items = await runOnce(apifyActorId, apifyApiKey, input);
+            if (Array.isArray(items)) allItems = allItems.concat(items);
+          } catch {
+            // If one search fails, continue with others
+          }
+        }
+      } else {
+        // Generic single run for other actors
+        allItems = await runOnce(apifyActorId, apifyApiKey, genericInput());
       }
 
-      const processed = processItems(items);
+      if (allItems.length === 0) {
+        throw new Error('No jobs returned from Naukri. Your Apify free credits may have run out, or try refreshing.');
+      }
+
+      const processed = processItems(allItems);
       saveCache(processed);
       setJobs(processed);
     } catch (err) {
       setJobs(getMockJobs());
-      setError(`${err.message} — showing demo data.`);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -258,7 +299,6 @@ function getMockJobs() {
       applyUrl: '#',
     },
   ];
-
   return raw
     .map((item) => ({ ...item, score: scoreJob(item), scam: detectScam(item) }))
     .sort((a, b) => b.score - a.score);

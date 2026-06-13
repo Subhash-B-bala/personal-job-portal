@@ -2,38 +2,32 @@ import { useState } from 'react';
 import { useSettings } from '../../hooks/useSettings';
 import { DEFAULT_ACTOR_ID } from '../../hooks/useApify';
 
-// Curated list of Apify actors that scrape jobs in India
+// Curated list of verified Apify actors that scrape jobs in India
 const KNOWN_ACTORS = [
   {
-    id: 'bovi/naukri-jobs-scraper',
-    name: 'Naukri Jobs Scraper',
-    description: 'Best actor for Data Analyst jobs in India. Scrapes Naukri.com with keyword + location filters. Returns title, company, skills, salary, experience, and direct job URL.',
+    id: 'automation-lab/naukri-scraper',
+    name: 'Naukri Scraper',
+    description: 'Best for Nandhini\'s search. 1,850 users · 6,784 runs. Supports keyword, location, and experience level (0-2 yrs). Runs 2 searches: "data analyst" + "power bi analyst" in Chennai.',
     sites: ['Naukri'],
     recommended: true,
   },
   {
+    id: 'codemaverick/naukri-job-scraper-latest',
+    name: 'Naukri Latest Jobs',
+    description: '98.4% success rate · 4.4★ rating. Returns the most recent Naukri postings. Simple — no keyword filter, just latest jobs.',
+    sites: ['Naukri'],
+  },
+  {
+    id: 'ocrad/naukri-jobs-scraper',
+    name: 'Naukri URL Scraper',
+    description: 'URL-based — paste a Naukri search URL with all filters pre-set. 100% success rate on 215 runs.',
+    sites: ['Naukri'],
+  },
+  {
     id: 'bebity/linkedin-jobs-scraper',
     name: 'LinkedIn Jobs Scraper',
-    description: 'Scrapes LinkedIn job listings. Best for mid-level roles with detailed JDs.',
+    description: 'Scrapes LinkedIn job listings. Good for mid-level roles with detailed JDs.',
     sites: ['LinkedIn'],
-  },
-  {
-    id: 'apify/indeed-scraper',
-    name: 'Indeed Scraper',
-    description: 'Scrapes Indeed job posts. Good coverage for fresher and entry-level roles.',
-    sites: ['Indeed'],
-  },
-  {
-    id: 'curious_coder/job-scraper',
-    name: 'Multi-site Job Scraper',
-    description: 'Scrapes multiple Indian job boards including Naukri, Shine, and TimesJobs.',
-    sites: ['Naukri', 'Shine', 'TimesJobs'],
-  },
-  {
-    id: 'tri_angle/wellfound-scraper',
-    name: 'Wellfound (AngelList) Scraper',
-    description: 'Best for startup and remote Data Analyst roles.',
-    sites: ['Wellfound'],
   },
 ];
 
