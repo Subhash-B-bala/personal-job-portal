@@ -1,28 +1,65 @@
-// Vercel serverless function — runs on Node.js, safe to use apify-client here
-import { ApifyClient } from 'apify-client';
+// Vercel serverless function — proxies Apify calls server-side (no CORS issues)
+// Receives API key from the browser via header, never stored on server.
 
-const SEARCH_QUERIES = [
-  'Data Analyst Chennai',
-  'Power BI Analyst Chennai',
-  'SQL Analyst fresher',
-  'Data Analyst Remote India',
+const ACTOR_ID = 'automation-lab/naukri-scraper';
+
+const SEARCHES = [
+  { keyword: 'data analyst',       location: 'chennai', maxJobs: 30, sortBy: 'date', proxyConfiguration: { useApifyProxy: true } },
+  { keyword: 'power bi sql analyst', location: 'chennai', maxJobs: 30, sortBy: 'date', proxyConfiguration: { useApifyProxy: true } },
 ];
+
+async function runSearch(apiKey, input) {
+  const url = `https://api.apify.com/v2/acts/${encodeURIComponent(ACTOR_ID)}/run-sync-get-dataset-items`
+    + `?token=${apiKey}&timeout=90&memory=256`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Apify ${res.status}`);
+  }
+  return res.json();
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'x-apify-key');
 
-  const apiKey  = process.env.VITE_APIFY_API_KEY;
-  const actorId = process.env.VITE_APIFY_ACTOR_ID;
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  if (!apiKey || apiKey === 'your_apify_key_here') {
-    // Return empty — frontend will use mock data
-    return res.status(200).json([]);
+  // API key comes from the browser (stored in user's localStorage)
+  const apiKey = req.headers['x-apify-key'] || '';
+
+  if (!apiKey) {
+    return res.status(200).json([]);   // no key → browser will show mock data
   }
 
   try {
-    const client = new ApifyClient({ token: apiKey });
-    const run = await client.actor(actorId).call({ queries: SEARCH_QUERIES, maxResults: 50 });
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    // Run both searches in parallel on the server
+    const results = await Promise.allSettled(
+      SEARCHES.map((input) => runSearch(apiKey, input))
+    );
+
+    let items = [];
+    const errors = [];
+
+    for (const r of results) {
+      if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+        items = items.concat(r.value);
+      } else if (r.status === 'rejected') {
+        errors.push(r.reason?.message || 'unknown error');
+      }
+    }
+
+    if (items.length === 0) {
+      const msg = errors.length ? errors.join(' | ') : 'Actor returned no results';
+      return res.status(502).json({ error: msg });
+    }
+
     return res.status(200).json(items);
   } catch (err) {
     return res.status(500).json({ error: err.message });
