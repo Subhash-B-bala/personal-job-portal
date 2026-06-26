@@ -25,10 +25,7 @@ function saveCache(jobs) {
 }
 function getApiSettings() {
   const saved = loadStorage(SETTINGS_KEY, {});
-  return {
-    apifyApiKey:  saved.apifyApiKey  || '',
-    apifyActorId: saved.apifyActorId || DEFAULT_ACTOR_ID,
-  };
+  return { apifyApiKey: saved.apifyApiKey || '' };
 }
 
 // ── Field normalisation ───────────────────────────────────────────────────
@@ -67,21 +64,51 @@ function dedupeById(items) {
 
 function processItems(rawItems) {
   return dedupeById(
-    rawItems.map((raw) => {
-      const item = normaliseItem(raw);
-      return { ...item, score: scoreJob(item), scam: detectScam(item) };
-    }).filter((item) => !tooMuchExperience(item.experience))
+    rawItems
+      .map((raw) => {
+        const item = normaliseItem(raw);
+        return { ...item, score: scoreJob(item), scam: detectScam(item) };
+      })
+      .filter((item) => !tooMuchExperience(item.experience))
   )
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
 }
 
+// ── Apify polling helpers (browser → Apify direct GET, CORS-safe) ─────────
+
+async function pollUntilDone(runId, apiKey, maxWaitMs = 300_000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, 5000)); // poll every 5s
+
+    const res  = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${apiKey}`);
+    const data = await res.json();
+    const status = data?.data?.status;
+
+    if (status === 'SUCCEEDED') return data.data.defaultDatasetId;
+    if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
+      throw new Error(`Apify run ${status}`);
+    }
+  }
+  throw new Error('Timed out waiting for results (>5 min).');
+}
+
+async function fetchDataset(datasetId, apiKey) {
+  const res = await fetch(
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${apiKey}&limit=50`
+  );
+  if (!res.ok) throw new Error(`Failed to fetch dataset (${res.status})`);
+  return res.json();
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useApify() {
-  const [jobs, setJobs]       = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState(null);
+  const [jobs, setJobs]           = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState(null);
+  const [statusMsg, setStatusMsg] = useState('');
 
   async function fetchJobs(forceRefresh = false) {
     if (!forceRefresh) {
@@ -90,7 +117,6 @@ export function useApify() {
     }
 
     const { apifyApiKey } = getApiSettings();
-
     if (!apifyApiKey) {
       setJobs(getMockJobs());
       setError(null);
@@ -99,29 +125,51 @@ export function useApify() {
 
     setLoading(true);
     setError(null);
+    setStatusMsg('Starting Naukri scraper…');
 
     try {
-      // Call Vercel serverless function — avoids browser CORS restrictions
-      const res = await fetch('/api/jobs', {
+      // Step 1: Start actor runs via serverless fn (avoids CORS on POST)
+      const startRes = await fetch('/api/jobs', {
         headers: { 'x-apify-key': apifyApiKey },
       });
+      const startData = await startRes.json();
 
-      const data = await res.json();
+      if (!startRes.ok) throw new Error(startData?.error || `Server error (${startRes.status})`);
+      const { runs } = startData;
+      if (!runs?.length) throw new Error('Could not start actor runs. Check your Apify API key.');
 
-      if (!res.ok) {
-        throw new Error(data?.error || `Server error (${res.status})`);
+      // Step 2: Poll each run until done, then fetch results
+      setStatusMsg(`Scraping Naukri… (${runs.length} searches running)`);
+
+      const settled = await Promise.allSettled(
+        runs.map(async ({ runId, defaultDatasetId }) => {
+          const datasetId = await pollUntilDone(runId, apifyApiKey);
+          return fetchDataset(datasetId || defaultDatasetId, apifyApiKey);
+        })
+      );
+
+      let allItems = [];
+      const errors = [];
+      for (const r of settled) {
+        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+          allItems = allItems.concat(r.value);
+        } else if (r.status === 'rejected') {
+          errors.push(r.reason?.message);
+        }
       }
 
-      if (!Array.isArray(data) || data.length === 0) {
-        throw new Error('No jobs returned. The actor may be busy — try again in a minute.');
+      if (allItems.length === 0) {
+        throw new Error(errors.join(' | ') || 'No jobs returned from Naukri.');
       }
 
-      const processed = processItems(data);
+      const processed = processItems(allItems);
       saveCache(processed);
       setJobs(processed);
+      setStatusMsg('');
     } catch (err) {
       setJobs(getMockJobs());
       setError(err.message);
+      setStatusMsg('');
     } finally {
       setLoading(false);
     }
@@ -129,7 +177,7 @@ export function useApify() {
 
   useEffect(() => { fetchJobs(); }, []);
 
-  return { jobs, loading, error, refresh: () => fetchJobs(true) };
+  return { jobs, loading, error, statusMsg, refresh: () => fetchJobs(true) };
 }
 
 // ── Mock / demo data ──────────────────────────────────────────────────────
@@ -138,32 +186,32 @@ function getMockJobs() {
   const raw = [
     {
       id: '1', title: 'Data Analyst', company: 'Zoho Corporation', location: 'Chennai, TN',
-      description: 'Looking for a data analyst with strong SQL, Power BI, and Excel skills. DAX knowledge preferred. Freshers with 0-1 years experience welcome. Build KPI dashboards, create automated reports, and drive data-driven decisions across product teams.',
+      description: 'Looking for a data analyst with strong SQL, Power BI, and Excel skills. DAX knowledge preferred. Freshers with 0-1 years experience welcome. Build KPI dashboards and automated reports.',
       postedAt: new Date().toISOString(), source: 'Naukri', applyUrl: 'https://careers.zohocorp.com',
     },
     {
       id: '2', title: 'Power BI Analyst', company: 'Freshworks', location: 'Chennai, TN',
-      description: 'Power BI Analyst to build interactive dashboards using DAX and data modeling. SQL and Excel proficiency required. ETL pipeline management and stakeholder reporting. 0-1 years experience accepted.',
+      description: 'Power BI Analyst to build dashboards using DAX and data modeling. SQL and Excel required. 0-1 years experience accepted.',
       postedAt: new Date().toISOString(), source: 'Naukri', applyUrl: 'https://careers.freshworks.com',
     },
     {
       id: '3', title: 'Junior Data Analyst', company: 'Latent View Analytics', location: 'Remote',
-      description: 'Fresher role for a junior data analyst. Required: SQL, Excel, Tableau. ETL pipelines, client reporting dashboards, and data quality checks. Strong analytical and communication skills are a plus.',
+      description: 'Fresher role. Required: SQL, Excel, Tableau. ETL pipelines and client reporting. Strong communication skills a plus.',
       postedAt: new Date().toISOString(), source: 'Naukri', applyUrl: 'https://latentview.com/careers',
     },
     {
       id: '4', title: 'SQL Data Analyst', company: 'Fractal Analytics', location: 'Remote',
-      description: 'SQL analyst role: advanced querying, data modeling, Power BI dashboard creation. Fresher to 1 year experience. Strong Excel and DAX skills needed. Chennai and remote options available.',
+      description: 'SQL analyst role: querying, data modeling, Power BI. Fresher to 1 year experience. Chennai and remote options.',
       postedAt: new Date().toISOString(), source: 'Naukri', applyUrl: 'https://fractal.ai/careers',
     },
     {
       id: '5', title: 'Analytics Trainee', company: 'Tiger Analytics', location: 'Chennai, TN',
-      description: 'Entry-level data analyst trainee. Excel, SQL, Power BI required. 0-1 year experience. Chennai office hybrid. Join a fast-growing analytics team on real-world problems.',
+      description: 'Entry-level analyst trainee. Excel, SQL, Power BI. 0-1 year experience. Chennai hybrid.',
       postedAt: new Date().toISOString(), source: 'Naukri', applyUrl: 'https://tigeranalytics.com/careers',
     },
     {
       id: '6', title: 'Data Analyst Fresher', company: 'EXL Service', location: 'Chennai, TN',
-      description: 'Entry-level data analyst. Learn SQL, Excel, Power BI in a structured environment. Work on real client projects. 0-1 year experience. Chennai office.',
+      description: 'Entry-level data analyst. SQL, Excel, Power BI. Work on real client projects. 0-1 year experience. Chennai office.',
       postedAt: new Date().toISOString(), source: 'Naukri', applyUrl: 'https://exlservice.com/careers',
     },
     {

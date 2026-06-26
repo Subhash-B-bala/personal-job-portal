@@ -5,7 +5,7 @@ import JobCard from './JobCard';
 const TABS = ['All Jobs', 'Flagged'];
 
 export default function JobFeed({ onAddToTracker }) {
-  const { jobs, loading, error, refresh } = useApify();
+  const { jobs, loading, error, statusMsg, refresh } = useApify();
   const [tab, setTab] = useState('All Jobs');
   const [statuses, setStatuses] = useState({});   // { jobId: 'apply' | 'skip' | 'save' }
   const [trusted, setTrusted] = useState({});      // { jobId: true }
@@ -75,12 +75,29 @@ export default function JobFeed({ onAddToTracker }) {
         </div>
       )}
 
-      {/* Loading skeleton */}
+      {/* Loading state */}
       {loading && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-44 bg-gray-100 rounded-xl animate-pulse" />
-          ))}
+        <div className="flex flex-col items-center gap-4 py-10">
+          <div className="flex gap-1.5">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="w-2.5 h-2.5 bg-indigo-400 rounded-full animate-bounce"
+                style={{ animationDelay: `${i * 0.15}s` }}
+              />
+            ))}
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-medium text-gray-700">
+              {statusMsg || 'Fetching jobs from Naukri…'}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">Usually takes 1–3 minutes</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 w-full mt-2">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="h-40 bg-gray-100 rounded-xl animate-pulse" />
+            ))}
+          </div>
         </div>
       )}
 
